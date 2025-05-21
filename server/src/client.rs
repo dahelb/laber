@@ -1,6 +1,6 @@
 use std::{collections::HashMap, net::SocketAddr, sync::mpsc::SendError};
 
-use crate::message::Message;
+use common::message::Message;
 
 #[derive(Debug, thiserror::Error)]
 pub enum ClientError {

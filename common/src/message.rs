@@ -52,6 +52,7 @@ impl FromStr for Message {
 
                 Ok(Message::SendMsg { user, text })
             }
+            "SYSTEM" => Ok(Message::System(remainder.to_string())),
             _ => Err(MessageParseError::InvalidCmd(cmd.to_string())),
         }
     }

@@ -1,7 +1,5 @@
 use std::{
-    io::{BufRead, BufReader, Write},
     net::{TcpListener, TcpStream},
-    str::FromStr,
     sync::{
         mpsc::{channel, Receiver},
         Arc, RwLock,
@@ -10,60 +8,32 @@ use std::{
 };
 
 use client::{Client, Clients};
-use message::Message;
+use common::{message::{Message, MessageParseError}, tcp_worker};
 use tracing::{info, span, Level};
 
 pub mod client;
-pub mod message;
 
-fn write_worker(mut stream: TcpStream, r: Receiver<Message>) -> std::io::Result<()> {
-    for m in r.iter() {
-        write!(stream, "{}\r\n", m)?;
-    }
-    Ok(())
+struct ServerMessageHandler {
+    clients: Arc<RwLock<Clients>>,
+    peer_addr: std::net::SocketAddr,
 }
 
-fn read_worker(stream: TcpStream, clients: Arc<RwLock<Clients>>) -> std::io::Result<()> {
-    let peer_addr = stream.peer_addr().expect("Failed to extract peer addr");
-
-    let _client_read_span = span!(Level::INFO, "read-worker", addr = ?peer_addr).entered();
-    let mut buf = String::new();
-
-    let mut reader = BufReader::new(&stream);
-    while let Ok(nbytes) = reader.read_line(&mut buf) {
-        if nbytes == 0 {
-            info!("Socket closed.");
-            break;
-        }
-
-        if buf.ends_with("\r\n") {
-            let buf_trimmed = buf.trim_end();
-            info!("New message received from client");
-            match Message::from_str(&buf_trimmed) {
-                Ok(m) => {
-                    let read_lock = clients.read().expect("Unlock failed.");
-                    read_lock.broadcast(m).unwrap();
-                }
-                Err(e) => {
-                    let read_lock = clients.read().expect("Unlock failed.");
-                    read_lock
-                        .send_to_client(&peer_addr, Message::from(e))
-                        .unwrap();
-                }
+impl tcp_worker::MessageHandler for ServerMessageHandler {
+    fn handle_message(&self, message_result: Result<Message, MessageParseError>) {
+        match message_result {
+            Ok(m) => {
+                info!("New message received from client");
+                let read_lock = self.clients.read().expect("Unlock failed.");
+                read_lock.broadcast(m).unwrap();
+            }
+            Err(e) => {
+                let read_lock = self.clients.read().expect("Unlock failed.");
+                read_lock
+                    .send_to_client(&self.peer_addr, Message::from(e))
+                    .unwrap();
             }
         }
-
-        buf.clear();
     }
-
-    // If the client disconnects, remove them from the clients list
-    info!("Removing {} from clients.", stream.peer_addr().unwrap());
-
-    let mut clients_lock = clients.write().unwrap();
-    clients_lock.remove_client(&peer_addr);
-    drop(clients_lock);
-
-    Ok(())
 }
 
 pub fn start_server(listen_addr: &str) -> Result<(), Box<dyn std::error::Error>> {
@@ -86,8 +56,9 @@ pub fn start_server(listen_addr: &str) -> Result<(), Box<dyn std::error::Error>>
         let peer_addr = stream.peer_addr().expect("Could not extract peer address.");
 
         let stream_clone = stream.try_clone().expect("Cloning stream failed");
+        let mut stream_for_writing = stream.try_clone().expect("Cloning stream failed");
 
-        thread::spawn(move || write_worker(stream, r));
+        thread::spawn(move || tcp_worker::send_worker(&mut stream_for_writing, r));
 
         info!("New connection");
 
@@ -104,7 +75,23 @@ pub fn start_server(listen_addr: &str) -> Result<(), Box<dyn std::error::Error>>
 
         drop(clients_lock);
 
-        thread::spawn(move || read_worker(stream_clone, clients));
+        let clients_for_reading = clients.clone();
+        let handler = ServerMessageHandler {
+            clients: clients_for_reading,
+            peer_addr,
+        };
+
+        thread::spawn(move || {
+            let result = tcp_worker::read_worker(stream_clone, handler);
+            if let Err(e) = result {
+                info!("Read worker error: {}", e);
+            }
+            
+            // If the client disconnects, remove them from the clients list
+            info!("Removing {} from clients.", peer_addr);
+            let mut clients_lock = clients.write().unwrap();
+            clients_lock.remove_client(&peer_addr);
+        });
     }
 
     Ok(())
