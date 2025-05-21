@@ -5,26 +5,16 @@ A simple TCP based client-server based chat protocol and its server implementati
 Run the server:
 
 ```
-$ cargo run
+$ cargo run --bin server
 ```
 
 This will start the chat server on socket 127.0.0.1:9999.
 
-
-Then, connect one or multiple instances of ncat or another netcat derivate of your choice in CRLF mode:
-
+Then, start one or multiple clients and start chatting:
 
 ```
-$ netcat -C localhost 9999
-SYSTEM Welcome to the chat server!
+$ cargo run --bin client
 ```
-
-Start sending and receiving messages to all connections using `MSG <user> <message>`.
-
-```
-MSG dave hello, world!
-```
-
 
 ## Protocol
 
